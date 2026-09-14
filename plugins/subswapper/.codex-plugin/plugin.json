@@ -1,6 +1,6 @@
 {
   "name": "subswapper",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Route Claude Code and Codex CLI tasks, model probes, and harness checks through Subswapper.",
   "author": {
     "name": "Subswapper contributors"

@@ -4,6 +4,10 @@ Use this route only when the authorized check needs the provider's normal
 configuration, installed skills, MCP tools, or app-server protocol. For a bounded
 model task, use `subswapper delegate` instead. Its restricted child intentionally
 disables integrations and cannot measure full-harness discovery.
+A successful wrapper call proves that routed task ran; it does not prove the
+skill was discovered or loaded. Use the target harness's catalog/discovery
+evidence for installation and its skill-load trace for invocation. Keep either
+claim unverified when the corresponding evidence is absent.
 
 Wrap each provider process with the matching service:
 

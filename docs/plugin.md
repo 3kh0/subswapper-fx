@@ -10,8 +10,8 @@ Personal model defaults remain in
 
 ## Install the public plugin
 
-Install CLI v0.3.0 or newer, which includes the delegation command. The older
-v0.2.0 CLI release does not include it.
+Install CLI v0.4.0 or newer for plugin 0.1.2, including prompt-file input and
+safe launch diagnostics. CLI v0.3.0 introduced the delegation command.
 
 ```sh
 go install github.com/lawzava/subswapper/cmd/subswapper@latest
@@ -26,7 +26,7 @@ codex plugin marketplace add lawzava/subswapper
 codex plugin add subswapper@subswapper
 ```
 
-This installs plugin version 0.1.1 through the repository's public marketplace.
+This installs plugin version 0.1.2 through the repository's public marketplace.
 It is not a listing in either provider's curated plugin directory. Configure
 Subswapper accounts as described in the repository README before delegation.
 
@@ -34,7 +34,7 @@ Subswapper accounts as described in the repository README before delegation.
 
 Requirements: Go from `go.mod`, an existing Subswapper configuration with selected
 accounts, and provider binaries on PATH. Delegation requires Unix process groups.
-The inspected CLI versions were Claude Code 2.1.258 and Codex 0.153.3.
+The inspected CLI versions were Claude Code 2.1.266 and Codex 0.154.0.
 Older versions must support the flags below; unsupported flags fail without retry.
 Windows builds, but the delegation command refuses execution there.
 
@@ -106,6 +106,25 @@ The launcher requires every task field and refuses extra provider arguments.
 Quote the task as one shell argument. Task text is visible in the caller's process
 arguments, so do not include credentials. The provider receives task text on stdin.
 
+CLI v0.4.0 also accepts `-task-file /absolute/path/to/prompt.md` instead of
+`-task`. The file must be a regular file of at most 16 MiB, with nonempty contents
+and no NUL bytes. Its contents are passed unchanged on stdin, including whitespace,
+quotes, and newlines. Relative paths resolve from the caller's working directory.
+The task file's contents do not become command arguments. Supply exactly one task
+source; even an empty `-task` cannot be combined with `-task-file`.
+
+Use this form when an adapter supplies a generated prompt. For example, an
+adapter that expands `{prompt_file}` can use this command template:
+
+```text
+subswapper delegate -service claude -cwd /absolute/worktree -model MODEL -effort high -intent read-only -timeout 10m -task-file {prompt_file}
+```
+
+The file contains the caller's instructions. A liveness prompt that says to reply
+`OK` must reach the child as that task. Asking the child to review the prompt file
+would create a different task and can make a working provider fail the liveness
+check. CLI v0.3.0 does not support `-task-file`; upgrade before using this form.
+
 `-config PATH` defaults to the parent's `SUBSWAPPER_CONFIG_PATH`, then the normal
 Subswapper default. `-account NAME` is optional. Account selection, authentication,
 proxy configuration, and proxy-down fallback all remain in `home run`. A configured
@@ -166,10 +185,28 @@ Provider output can contain task data; this is not a general secret scanner.
 
 Provider codes can overlap launcher codes. Preserve diagnostics with the status.
 A zero exit does not establish that the acceptance check passed.
+Capture the original process status before displaying a shortened log. A shell
+pipeline ending with `tail` can return zero after the delegate fails. Preserve
+stdout and stderr, then check both the status and the requested result. A parent
+process that reports success after a denied child launch has not completed that
+child's task. Wait for a background process's terminal result before reporting it.
 Timeout and cancellation forcibly terminate the `home run` process group,
 including its provider and descendants. Partial output stays available. Writes
 already made are not rolled back. Processes that detach into another process group,
 or a launcher killed with SIGKILL, are outside this cancellation guarantee.
+
+Claude launch failures use fixed diagnostic text for missing or expired tokens,
+invalid token storage, read-only or inaccessible runtime storage, executable
+startup, and authentication checks. These diagnostics survive the `delegate`
+boundary without exposing the underlying path, account label, or token contents.
+Unknown delegated launch errors remain generic. A state-lock filesystem failure
+does not establish that a token expired. Check host access to launcher storage;
+changing the child's read-only intent does not repair host permissions.
+
+Provider quotas and MCP authentication remain separate from these launch checks.
+A successful wrapped model response proves that response was obtained. Verify
+skill discovery, skill loading, integrations, and task acceptance using their
+respective evidence.
 
 ## Verification
 
@@ -220,14 +257,22 @@ explanation-only requests, and account management. It sends only the description
 and synthetic requests to the selected model. Ordinary `go test ./...` skips
 authenticated evaluation.
 
+`TestSkillOutcomes` adds twelve synthetic transcript cases for status masking,
+denied children, runtime permissions, prompt-file semantics, discovery evidence,
+authentication, quotas, and completed tasks. It records the model's diagnosis,
+outcome, next action, and evidence explanation. Compare the same cases against a
+saved skill and its `references/cli-launch.md` using the same model. These tests
+measure decisions about supplied evidence; they do not prove tool execution or
+automatic skill loading in a live parent harness.
+
 ```sh
 SUBSWAPPER_TEST_SERVICE=codex SUBSWAPPER_TEST_MODEL=YOUR_CODEX_MODEL \
-  go test ./plugins/subswapper -run TestSkillRouting -count=2 -v
+  go test ./plugins/subswapper -run 'TestSkill(Routing|Outcomes)$' -count=2 -v
 
 # Compare the identical cases against a saved previous skill.
 SUBSWAPPER_TEST_SERVICE=codex SUBSWAPPER_TEST_MODEL=YOUR_CODEX_MODEL \
   SUBSWAPPER_TEST_SKILL=/absolute/path/to/previous/SKILL.md \
-  go test ./plugins/subswapper -run TestSkillRouting -count=2 -v
+  go test ./plugins/subswapper -run 'TestSkill(Routing|Outcomes)$' -count=2 -v
 ```
 
 On 2026-09-10, `gpt-6-astra` selected the expected route in all nine cases in two

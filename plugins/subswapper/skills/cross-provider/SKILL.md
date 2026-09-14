@@ -45,6 +45,9 @@ request a write-capable child. Directory scope is the maximum writable scope;
 narrower file ownership remains an instruction in the task. Claude write mode
 supports file edits, without shell execution. Codex write mode supports sandboxed
 commands. Do not widen either policy to make a blocked task succeed.
+Read-only task intent restricts child work; the launcher can still need runtime
+writes, such as its account-state lock, within the host's existing permissions.
+A blocked runtime write is not repaired by widening the child's task intent.
 
 ```sh
 subswapper delegate \
@@ -60,13 +63,21 @@ effort selected by the caller. Quote task text as a single shell argument using
 safe shell quoting. Never interpolate untrusted task text into shell code.
 `-config PATH` and `-account NAME` are optional existing Subswapper selectors;
 account choice normally stays with Subswapper.
+When the caller supplies a file containing the child instructions, use
+`-task-file /absolute/path/to/prompt.md` instead of `-task` to pass its contents
+unchanged. Asking the child to review that file changes the task; use that wording
+only when the file itself is the intended review target.
 
 Keep the invocation attached until it completes. stdout carries provider text;
 stderr carries diagnostics. Preserve the process status and any output, including
-partial output. Report timeout (124), cancellation (130 for SIGINT, 143 for
+partial output. Capture status directly before truncating output; a pipeline
+ending in `tail` can report success when the provider failed. Report timeout
+(124), cancellation (130 for SIGINT, 143 for
 SIGTERM), setup failure (1), or the provider exit code. Provider codes may overlap
 these numbers, so retain the diagnostic too. A zero exit alone does not prove the
-task's acceptance check passed. No automatic retries or provider fallback are
+task's acceptance check passed: inspect the requested result and any required
+child execution. A parent that exits zero after its child was denied has not
+completed that child's task. No automatic retries or provider fallback are
 part of this skill. Return the result to the coordinating harness.
 
 For a failed bare CLI probe, identify the missing launch route before blaming
@@ -74,3 +85,8 @@ the model or asking the user to log in. If the probe remains authorized, run
 that probe through Subswapper. This corrects the transport; it does not authorize
 a different provider, model, account change, or wider permissions. Report any
 remaining Subswapper authentication, quota, permission, or model error as such.
+Read nested diagnostics before classifying a summary: a `state.lock` read-only
+filesystem error beneath "no usable setup-token accounts" establishes a local
+runtime-access blocker, not an expired credential. A provider quota response
+establishes a quota failure, not a plugin defect. Report only the cause supported
+by the evidence; do not prescribe login or reinstallation for unrelated failures.

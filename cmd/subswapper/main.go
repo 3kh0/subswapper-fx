@@ -38,7 +38,12 @@ func main() {
 			return
 		}
 		if os.Getenv(delegateMarker) != "" && len(os.Args) > 1 && os.Args[1] == "home" {
-			_, _ = fmt.Fprintln(os.Stderr, "delegated provider launch failed")
+			var diagnostic launchDiagnostic
+			if errors.As(err, &diagnostic) {
+				_, _ = fmt.Fprintln(os.Stderr, diagnostic)
+			} else {
+				_, _ = fmt.Fprintln(os.Stderr, "delegated provider launch failed")
+			}
 		} else {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 		}
@@ -138,6 +143,9 @@ func runHome(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	service, account, home, err := resolveHomeSelection(*cfg, *serviceName, *accountName)
 	if err != nil {
+		if action == "run" {
+			return classifyLauncherFailure(err)
+		}
 		return err
 	}
 	switch action {
@@ -477,7 +485,7 @@ func runClaudeWithSetupToken(
 ) error {
 	token, status, err := subswapper.LoadClaudeSetupTokenWithStatus(cfg, service.Name, account)
 	if err != nil || !status.Usable {
-		return errors.New("selected Claude account has no usable setup token")
+		return diagnoseClaudeTokenFailure(err)
 	}
 	// Through the proxy the process only ever holds the shared secret; the
 	// proxy swaps real tokens per request. A proxy that is configured but not
@@ -508,7 +516,11 @@ func runClaudeWithSetupToken(
 			prepareRuntimeHome = subswapper.PrepareClaudeSharedRuntimeHome
 		}
 		if err := prepareRuntimeHome(runtimeHome); err != nil {
-			return err
+			var diagnostic launchDiagnostic
+			if classified := classifyLauncherFailure(err); errors.As(classified, &diagnostic) {
+				return diagnostic
+			}
+			return launchRuntimeUnavailable
 		}
 	}
 	metadata := map[string]string{
@@ -555,6 +567,9 @@ func runClaudeWithSetupToken(
 	runErr := cmd.Run()
 	if err := errors.Join(redactedStdout.Flush(), redactedStderr.Flush()); err != nil {
 		return errors.New("claude output forwarding failed")
+	}
+	if runErr != nil && cmd.Process == nil {
+		return launchExecutable
 	}
 	return runErr
 }
@@ -681,7 +696,13 @@ func checkClaudeAuthentication(command string, environment []string) error {
 	cmd.Stdout = output
 	cmd.Stderr = &limitedOutput{limit: 64 << 10}
 	if err := cmd.Run(); err != nil {
-		return errors.New("selected Claude account authentication check failed")
+		if cmd.Process == nil {
+			return launchExecutable
+		}
+		if ctx.Err() != nil {
+			return launchAuthTimeout
+		}
+		return launchAuthFailed
 	}
 	var status struct {
 		LoggedIn    bool   `json:"loggedIn"`
@@ -690,7 +711,7 @@ func checkClaudeAuthentication(command string, environment []string) error {
 	}
 	if err := json.Unmarshal(output.buffer.Bytes(), &status); err != nil ||
 		!status.LoggedIn || status.AuthMethod != "oauth_token" || status.APIProvider != "firstParty" {
-		return errors.New("selected Claude account authentication is not usable")
+		return launchAuthUnusable
 	}
 	return nil
 }
@@ -1237,7 +1258,7 @@ Usage:
   subswapper home login -service claude|codex [-account <name>]
   subswapper home token set|status|remove -service claude [-account <name>]
   subswapper home run -service claude|codex [-account <name>] [-- command args...]
-  subswapper delegate -service claude|codex -cwd /path -model MODEL -effort LEVEL -intent read-only|workspace-write -task TEXT [-timeout 10m]
+  subswapper delegate -service claude|codex -cwd /path -model MODEL -effort LEVEL -intent read-only|workspace-write (-task TEXT | -task-file PATH) [-timeout 10m]
   subswapper home migrate [-config ~/.config/subswapper/config.json]
   subswapper capture -service claude|codex -account <name> [-email user@example.com]
   subswapper remove -service claude|codex -account <name> [-force] [-delete-home]

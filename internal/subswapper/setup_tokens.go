@@ -24,6 +24,7 @@ var (
 	ErrClaudeSetupTokenDuplicate         = errors.New("claude setup token duplicates another account")
 	ErrClaudeSetupTokenIdentityDuplicate = errors.New("claude account identity duplicates another account")
 	ErrClaudeSetupTokenStorageUnsafe     = errors.New("claude setup token storage is unsafe")
+	ErrClaudeSetupTokenMalformed         = errors.New("claude setup token file is malformed")
 	ErrClaudeSetupTokenRevisionMismatch  = errors.New("claude setup token metadata does not match secure storage")
 )
 
@@ -443,7 +444,7 @@ func readClaudeSetupTokenEnvelope(cfg Config, serviceName, accountName string) (
 	}
 	var envelope claudeSetupTokenEnvelope
 	if json.Unmarshal(data, &envelope) != nil || envelope.Token == "" || envelope.Revision == "" || envelope.StoredAt.IsZero() || !envelope.ExpiresAt.After(envelope.StoredAt) {
-		return claudeSetupTokenEnvelope{}, false, errors.New("claude setup token file is malformed")
+		return claudeSetupTokenEnvelope{}, false, ErrClaudeSetupTokenMalformed
 	}
 	return envelope, true, nil
 }

@@ -61,10 +61,11 @@ func runDelegate(args []string, stdout, stderr io.Writer) error {
 	effort := fs.String("effort", "", "explicit provider effort")
 	intent := fs.String("intent", "", "read-only or workspace-write")
 	task := fs.String("task", "", "bounded task text")
+	taskFile := fs.String("task-file", "", "file containing the exact task instructions")
 	timeout := fs.Duration("timeout", 10*time.Minute, "positive execution deadline")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			_, err := fmt.Fprintln(stdout, "Usage: subswapper delegate -service claude|codex -cwd /absolute/path -model MODEL -effort LEVEL -intent read-only|workspace-write -task TEXT [-timeout 10m] [-config PATH] [-account NAME]")
+			_, err := fmt.Fprintln(stdout, "Usage: subswapper delegate -service claude|codex -cwd /absolute/path -model MODEL -effort LEVEL -intent read-only|workspace-write (-task TEXT | -task-file PATH) [-timeout 10m] [-config PATH] [-account NAME]")
 			return err
 		}
 		return errors.New("invalid delegate options")
@@ -92,8 +93,27 @@ func runDelegate(args []string, stdout, stderr io.Writer) error {
 	if *intent != "read-only" && *intent != "workspace-write" {
 		return errors.New("delegate requires -intent read-only or workspace-write")
 	}
+	var hasTask, hasTaskFile bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "task":
+			hasTask = true
+		case "task-file":
+			hasTaskFile = true
+		}
+	})
+	if hasTask == hasTaskFile {
+		return errors.New("delegate requires exactly one of -task or -task-file")
+	}
+	if hasTaskFile {
+		content, err := readDelegateTaskFile(*taskFile)
+		if err != nil {
+			return err
+		}
+		*task = content
+	}
 	if strings.TrimSpace(*task) == "" || strings.ContainsRune(*task, 0) {
-		return errors.New("delegate requires a nonempty -task")
+		return errors.New("delegate requires a nonempty task without NUL bytes")
 	}
 	if *timeout <= 0 {
 		return errors.New("delegate requires a positive -timeout")
@@ -132,6 +152,43 @@ func runDelegate(args []string, stdout, stderr io.Writer) error {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return executeDelegate(cmd, *timeout)
+}
+
+const maxDelegateTaskFileBytes = 16 << 20
+
+func readDelegateTaskFile(path string) (string, error) {
+	// Reject devices and pipes before reading: the delegation timeout starts
+	// with the provider process, not while loading the caller's prompt.
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", errors.New("delegate task file is unavailable")
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("delegate task file must be a regular file")
+	}
+	if info.Size() > maxDelegateTaskFileBytes {
+		return "", errors.New("delegate task file exceeds 16 MiB")
+	}
+	file, err := openDelegateTaskFile(path)
+	if err != nil {
+		return "", errors.New("delegate task file is unavailable")
+	}
+	defer func() { _ = file.Close() }()
+	info, err = file.Stat()
+	if err != nil {
+		return "", errors.New("delegate task file is unavailable")
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("delegate task file must be a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxDelegateTaskFileBytes+1))
+	if err != nil {
+		return "", errors.New("delegate task file could not be read")
+	}
+	if len(data) > maxDelegateTaskFileBytes {
+		return "", errors.New("delegate task file exceeds 16 MiB")
+	}
+	return string(data), nil
 }
 
 func delegateProviderArgs(service, model, effort, intent string) []string {

@@ -65,10 +65,7 @@ func TestSkillRouting(t *testing.T) {
 		t.Fatalf("routing evaluation: %v\n%s\n%s", err, out, stderr.String())
 	}
 	var answers []struct{ ID, Route string }
-	response := strings.TrimSpace(string(out))
-	response = strings.TrimPrefix(response, "```json")
-	response = strings.TrimSuffix(response, "```")
-	if err := json.Unmarshal([]byte(response), &answers); err != nil {
+	if err := decodeSkillResponse(out, &answers); err != nil {
 		t.Fatalf("invalid routing response: %v\n%s", err, out)
 	}
 	got := map[string]string{}

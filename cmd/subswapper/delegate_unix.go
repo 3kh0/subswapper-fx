@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+func openDelegateTaskFile(path string) (*os.File, error) {
+	// A pathname can be replaced after validation. Do not wait for a writer
+	// if a regular prompt file becomes a FIFO before open.
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}
+
 func executeDelegate(cmd *exec.Cmd, timeout time.Duration) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// A descendant retaining an output pipe must not block Wait forever.
