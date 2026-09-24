@@ -114,7 +114,8 @@ value auto-switching compares.
 | `switch -service <name> [-account <name>\|auto]` | Change the preferred route; `auto` picks the least-used healthy account. |
 | `switch -service all -account auto` | Auto-pick the best account for every service at once. |
 | `status` (alias `list`) | Show every captured account with usage windows, score, and state. |
-| `monitor [-interval 5m] [-once] [-no-auto] [-verbose] [-proxy]` | Poll usage on a loop and auto-switch when thresholds are hit. Continuous mode logs events; `-verbose` prints every table; `-proxy` also serves every configured auth proxy. |
+| `monitor [-interval 5m] [-once] [-no-auto] [-no-warmup] [-verbose] [-proxy]` | Poll usage on a loop, auto-switch when thresholds are hit, and warm idle windows (`-no-warmup` skips warm-ups). Continuous mode logs events; `-verbose` prints every table; `-proxy` also serves every configured auth proxy. |
+| `warmup [-dry-run]` | Start every idle account's unstarted 5-hour or weekly window now; `-dry-run` only lists them. See [Warming idle windows](#warming-idle-windows). |
 | `proxy [-service <name>] [-listen 127.0.0.1:7878]` | Serve the auth proxies configured by `proxy_listen`; `-listen` overrides one service's address. |
 | `remove -service <name> -account <name> [-force] [-delete-home]` (alias `rm`) | Unregister an account; preserve its home unless deletion is explicit. Remove a Claude setup token first. |
 | `import-cswap [-root <dir>]` | Import accounts from an existing claude-swap (`cswap`) install. |
@@ -348,6 +349,35 @@ or CLI processes are not silently rebound; start the next command through
 `home run`. Explicit custom file-bundle services retain the legacy
 transactional switching behavior.
 
+## Warming idle windows
+
+Claude and Codex start an account's 5-hour and weekly windows on the first
+request after they reset, not on a fixed schedule. An account that sits idle
+past a reset has no clock running. When you do use it, you get the full
+window from that moment, and the reset lands later than it would have if the
+window had kept rolling.
+
+By default, each monitor cycle looks for account-home accounts whose windows
+have not started and sends each one the smallest request that counts:
+
+- **Claude**: a one-token Haiku message sent straight to Anthropic with the
+  account's setup token. The response's rate-limit headers are stored like a
+  proxy sample. A setup-token account the proxy has never served has no known
+  usage, so it is warmed once per five hours until a sample exists.
+- **Codex**: one `codex exec --ephemeral --ignore-user-config` turn in the
+  account home with low reasoning effort. Codex reports an unstarted window as
+  0% used with a reset one full window away.
+
+A window counts as unstarted when its reset time is missing or has passed, or,
+for Codex, when it is floating at 0%. After a warm-up, the account is skipped
+for the length of each window it started. After a failure, it is skipped for
+15 minutes. Exhausted accounts and accounts with rejected credentials are
+never warmed. A service's `warmup_model` overrides the model (Claude
+default `claude-haiku-4-5`, Codex default is the CLI's default model).
+`subswapper warmup -dry-run` shows what the next cycle would warm. To turn
+warm-ups off, set `"warmup": false` in the `monitor` block or pass
+`monitor -no-warmup`.
+
 ## Configuration
 
 `subswapper init` writes a config like this:
@@ -373,7 +403,8 @@ The `monitor` block accepts these knobs (defaults shown):
   "auto_switch": true,
   "switch_threshold": 0.90,
   "min_improvement": 0.10,
-  "cooldown": "30m"
+  "cooldown": "30m",
+  "warmup": true
 }
 ```
 
