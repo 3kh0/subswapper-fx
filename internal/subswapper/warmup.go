@@ -2,6 +2,7 @@ package subswapper
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,9 @@ const (
 	codexWarmupStderrLimit = 64 << 10
 
 	defaultClaudeWarmupModel = "claude-haiku-4-5"
+	// defaultClaudeFableWarmupModel starts the Fable weekly window, which
+	// only Fable responses consume and report.
+	defaultClaudeFableWarmupModel = "claude-fable-5-1"
 	// claudeWarmupSystemPrompt is the identity Anthropic expects on requests
 	// made with a Claude Code OAuth token.
 	claudeWarmupSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -43,6 +47,10 @@ const (
 	// WarmupReasonUnknownUsage marks a Claude account with no usage sample;
 	// only a request reveals its windows.
 	WarmupReasonUnknownUsage = "usage unknown"
+
+	warmupWindowFiveHour    = "5h"
+	warmupWindowWeekly      = "weekly"
+	warmupWindowFableWeekly = "fable weekly"
 )
 
 var claudeWarmupUpstream = defaultClaudeProxyUpstream
@@ -51,10 +59,14 @@ var claudeWarmupUpstream = defaultClaudeProxyUpstream
 type WarmupCandidate struct {
 	Service string
 	Account string
-	// Windows names the unstarted windows ("5h", "weekly") or holds
-	// WarmupReasonUnknownUsage.
+	// Windows names the unstarted windows ("5h", "weekly", "fable weekly")
+	// or holds WarmupReasonUnknownUsage.
 	Windows []string
 	addedAt time.Time
+}
+
+func (c WarmupCandidate) warmsFable() bool {
+	return slices.Contains(c.Windows, warmupWindowFableWeekly)
 }
 
 // WarmupEvent is the outcome of one warm-up request.
@@ -63,8 +75,8 @@ type WarmupEvent struct {
 	Err error
 }
 
-// PlanWarmups lists the accounts whose five-hour or weekly window has not
-// started. It sends nothing.
+// PlanWarmups lists the accounts whose five-hour, weekly, or Fable weekly
+// window has not started. It sends nothing.
 func PlanWarmups(ctx context.Context, cfg Config) ([]WarmupCandidate, error) {
 	lock, err := AcquireStateLock(ctx, cfg)
 	if err != nil {
@@ -118,7 +130,7 @@ func WarmupOnce(ctx context.Context, cfg Config) ([]WarmupEvent, error) {
 		var warmErr error
 		switch {
 		case isClaudeService(service):
-			warmErr = warmClaudeAccount(ctx, cfg, service, candidate.Account)
+			warmErr = warmClaudeAccount(ctx, cfg, service, candidate)
 		case isCodexService(service):
 			warmErr = warmCodexAccount(ctx, cfg, service, candidate.Account)
 		default:
@@ -173,8 +185,9 @@ func warmupWindows(service ServiceConfig, account AccountState, now time.Time) [
 	default:
 		return nil
 	}
-	if usage.Exhausted() {
-		// A request would only be rejected; the window is running anyway.
+	if windowExhausted(usage.FiveHour) || windowExhausted(usage.Weekly) {
+		// Every model counts against these, so a request would only be
+		// rejected; the window is running anyway.
 		return nil
 	}
 	// Claude reports windows only on responses, which start them, so only
@@ -182,14 +195,18 @@ func warmupWindows(service ServiceConfig, account AccountState, now time.Time) [
 	floating := isCodexService(service)
 	var windows []string
 	for _, candidate := range []struct {
-		name   string
-		window LimitWindow
-		length time.Duration
+		name     string
+		window   LimitWindow
+		length   time.Duration
+		warmupAt time.Time
 	}{
-		{"5h", usage.FiveHour, fiveHourWindowLength},
-		{"weekly", usage.Weekly, weeklyWindowLength},
+		{warmupWindowFiveHour, usage.FiveHour, fiveHourWindowLength, account.WarmupAt},
+		{warmupWindowWeekly, usage.Weekly, weeklyWindowLength, account.WarmupAt},
+		// Only a Fable warm-up starts the Fable window; a Haiku one does not.
+		{warmupWindowFableWeekly, usage.FableWeekly, weeklyWindowLength, account.FableWarmupAt},
 	} {
-		if candidate.window.Pct == nil || warmedWithin(account.WarmupAt, candidate.length, now) {
+		if candidate.window.Pct == nil || windowExhausted(candidate.window) ||
+			warmedWithin(candidate.warmupAt, candidate.length, now) {
 			continue
 		}
 		if windowUnstarted(candidate.window, usage.ObservedAt, candidate.length, floating, now) {
@@ -197,6 +214,11 @@ func warmupWindows(service ServiceConfig, account AccountState, now time.Time) [
 		}
 	}
 	return windows
+}
+
+func windowExhausted(window LimitWindow) bool {
+	ratio, ok := window.Ratio()
+	return ok && ratio >= 1
 }
 
 // warmedWithin reports that a warm-up started a window of this length that
@@ -221,8 +243,10 @@ func windowUnstarted(window LimitWindow, observedAt time.Time, length time.Durat
 }
 
 // warmClaudeAccount sends a one-token message with the account's setup token
-// and records the rate-limit headers like a proxied response.
-func warmClaudeAccount(ctx context.Context, cfg Config, service ServiceConfig, accountName string) error {
+// and records the rate-limit headers like a proxied response. An idle Fable
+// window needs a Fable model, which starts the other windows too.
+func warmClaudeAccount(ctx context.Context, cfg Config, service ServiceConfig, candidate WarmupCandidate) error {
+	accountName := candidate.Account
 	token, status, err := LoadClaudeSetupTokenWithStatus(cfg, service.Name, accountName)
 	if err != nil {
 		return err
@@ -234,9 +258,9 @@ func warmClaudeAccount(ctx context.Context, cfg Config, service ServiceConfig, a
 	if upstream == "" {
 		upstream = claudeWarmupUpstream
 	}
-	model := service.WarmupModel
-	if model == "" {
-		model = defaultClaudeWarmupModel
+	model := cmp.Or(service.WarmupModel, defaultClaudeWarmupModel)
+	if candidate.warmsFable() {
+		model = cmp.Or(service.WarmupFableModel, defaultClaudeFableWarmupModel)
 	}
 	body, err := json.Marshal(map[string]any{
 		"model":      model,
@@ -340,6 +364,9 @@ func recordWarmup(ctx context.Context, cfg Config, candidate WarmupCandidate, wa
 	} else {
 		account.WarmupAt = now
 		account.WarmupRetryAt = time.Time{}
+		if candidate.warmsFable() {
+			account.FableWarmupAt = now
+		}
 	}
 	serviceState.Accounts[candidate.Account] = account
 	return SaveState(cfg.StatePath, state)

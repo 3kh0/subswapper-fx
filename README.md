@@ -363,7 +363,9 @@ have not started and sends each one the smallest request that counts:
 - **Claude**: a one-token Haiku message sent straight to Anthropic with the
   account's setup token. The response's rate-limit headers are stored like a
   proxy sample. A setup-token account the proxy has never served has no known
-  usage, so it is warmed once per five hours until a sample exists.
+  usage, so it is warmed once per five hours until a sample exists. The Fable
+  weekly window counts only Fable requests, so when that window has reset
+  unused the warm-up uses a Fable model instead, which starts all three.
 - **Codex**: one `codex exec --ephemeral --ignore-user-config` turn in the
   account home with low reasoning effort. Codex reports an unstarted window as
   0% used with a reset one full window away.
@@ -372,8 +374,11 @@ A window counts as unstarted when its reset time is missing or has passed, or,
 for Codex, when it is floating at 0%. After a warm-up, the account is skipped
 for the length of each window it started. After a failure, it is skipped for
 15 minutes. Exhausted accounts and accounts with rejected credentials are
-never warmed. A service's `warmup_model` overrides the model (Claude
-default `claude-haiku-4-5`, Codex default is the CLI's default model).
+never warmed; an exhausted Fable window only stops the Fable warm-up. A
+service's `warmup_model` overrides the model (Claude default
+`claude-haiku-4-5`, Codex default is the CLI's default model), and a Claude
+service's `warmup_fable_model` overrides the Fable one (default
+`claude-fable-5-1`).
 `subswapper warmup -dry-run` shows what the next cycle would warm. To turn
 warm-ups off, set `"warmup": false` in the `monitor` block or pass
 `monitor -no-warmup`.

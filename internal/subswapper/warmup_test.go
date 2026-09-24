@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,33 @@ func TestWarmupWindows(t *testing.T) {
 			}()},
 		},
 		{
+			name:    "claude fable window reset after a haiku warm-up",
+			service: claude,
+			account: AccountState{SetupTokenRevision: "rev", WarmupAt: now.Add(-time.Hour), ProxyUsage: withFable(
+				claudeUsage(now.Add(4*time.Hour), now.Add(6*24*time.Hour), 0), 32, now.Add(-3*time.Hour))},
+			want: []string{warmupWindowFableWeekly},
+		},
+		{
+			name:    "claude fable window warmed within the week",
+			service: claude,
+			account: AccountState{SetupTokenRevision: "rev", FableWarmupAt: now.Add(-24 * time.Hour), ProxyUsage: withFable(
+				claudeUsage(now.Add(4*time.Hour), now.Add(6*24*time.Hour), 0), 32, now.Add(-3*time.Hour))},
+		},
+		{
+			name:    "claude all three windows reset",
+			service: claude,
+			account: AccountState{SetupTokenRevision: "rev", ProxyUsage: withFable(
+				claudeUsage(now.Add(-time.Hour), now.Add(-time.Hour), 40), 32, now.Add(-time.Hour))},
+			want: []string{warmupWindowFiveHour, warmupWindowWeekly, warmupWindowFableWeekly},
+		},
+		{
+			name:    "claude exhausted fable window still warms the five-hour window",
+			service: claude,
+			account: AccountState{SetupTokenRevision: "rev", ProxyUsage: withFable(
+				claudeUsage(now.Add(-time.Hour), now.Add(48*time.Hour), 40), 100, now.Add(48*time.Hour))},
+			want: []string{warmupWindowFiveHour},
+		},
+		{
 			name:    "rejected credentials",
 			service: claude,
 			account: AccountState{SetupTokenRevision: "rev", CredentialsError: "setup token authentication rejected", ProxyUsage: claudeUsage(now.Add(-time.Hour), now.Add(-time.Hour), 40)},
@@ -135,6 +163,73 @@ func TestWarmupWindows(t *testing.T) {
 				t.Fatalf("warmupWindows = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func withFable(usage UsageSnapshot, pct float64, reset time.Time) UsageSnapshot {
+	usage.FableWeekly = LimitWindow{Pct: PtrFloat64(pct), ResetsAt: reset}
+	return usage
+}
+
+func TestWarmupStartsIdleFableWindowWithFableModel(t *testing.T) {
+	upstream := newProxyUpstream(t)
+	cfg, _ := setupProxyAccounts(t, upstream.server.URL)
+	upstream.respond("setup-token-b", func(w http.ResponseWriter, r *http.Request) {
+		rateLimitHeaders(w, 0, 0.2, "allowed")
+		w.Header().Set("anthropic-ratelimit-unified-7d_oi-utilization", "0")
+		w.Header().Set("anthropic-ratelimit-unified-7d_oi-reset", strconv.FormatInt(time.Now().Add(weeklyWindowLength).Unix(), 10))
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// a is running everywhere; b was Haiku-warmed, but its Fable window
+	// reset and only a Fable request starts it.
+	now := time.Now().UTC()
+	state, err := LoadState(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, fableReset := range map[string]time.Time{"a": now.Add(48 * time.Hour), "b": now.Add(-time.Hour)} {
+		account := state.Service("claude").Accounts[name]
+		account.ProxyUsage = UsageSnapshot{
+			FiveHour:      LimitWindow{Pct: PtrFloat64(0), ResetsAt: now.Add(4 * time.Hour)},
+			Weekly:        LimitWindow{Pct: PtrFloat64(20), ResetsAt: now.Add(72 * time.Hour)},
+			FableWeekly:   LimitWindow{Pct: PtrFloat64(30), ResetsAt: fableReset},
+			ObservedAt:    now.Add(-time.Hour),
+			Source:        claudeUsageSourceProxy,
+			TokenRevision: account.SetupTokenRevision,
+		}
+		account.WarmupAt = now.Add(-time.Hour)
+		state.Service("claude").Accounts[name] = account
+	}
+	if err := SaveState(cfg.StatePath, state); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := WarmupOnce(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Account != "b" || events[0].Err != nil ||
+		!slices.Equal(events[0].Windows, []string{warmupWindowFableWeekly}) {
+		t.Fatalf("events = %#v", events)
+	}
+	calls := upstream.recorded()
+	if len(calls) != 1 || !strings.Contains(calls[0].Body, `"model":"`+defaultClaudeFableWarmupModel+`"`) {
+		t.Fatalf("upstream calls = %#v", calls)
+	}
+	state, err = LoadState(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := state.Service("claude").Accounts["b"]
+	if b.FableWarmupAt.IsZero() || !b.FableWarmupAt.Equal(b.WarmupAt) {
+		t.Fatalf("fable warm-up not recorded: fable=%s warmup=%s", b.FableWarmupAt, b.WarmupAt)
+	}
+	if !b.ProxyUsage.FableWeekly.ResetsAt.After(now) {
+		t.Fatalf("fable window not recorded from the response: %#v", b.ProxyUsage.FableWeekly)
+	}
+	if events, err := WarmupOnce(context.Background(), cfg); err != nil || len(events) != 0 {
+		t.Fatalf("second warm-up = %#v, %v", events, err)
 	}
 }
 
@@ -378,6 +473,8 @@ func TestWarmupModelValidation(t *testing.T) {
 		{"flag-like model", ServiceConfig{Name: "codex", Kind: "codex", WarmupModel: "--yolo"}, false},
 		{"padded model", ServiceConfig{Name: "codex", Kind: "codex", WarmupModel: " gpt "}, false},
 		{"custom kind", ServiceConfig{Name: "other", Kind: "custom", WarmupModel: "m", Files: []ManagedFile{{Path: "/tmp/x", BackupName: "x"}}}, false},
+		{"claude fable model", ServiceConfig{Name: "claude", Kind: "claude", WarmupFableModel: "claude-fable-5-1"}, true},
+		{"codex fable model", ServiceConfig{Name: "codex", Kind: "codex", WarmupFableModel: "claude-fable-5-1"}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := Config{Services: []ServiceConfig{test.service}}
