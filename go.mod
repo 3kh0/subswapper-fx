@@ -1,4 +1,4 @@
-module github.com/lawzava/subswapper
+module github.com/3kh0/subswapper-fx
 
 go 1.26.6
 

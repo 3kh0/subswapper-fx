@@ -1,7 +1,12 @@
-# subswapper
+# subswapper-fx
 
-[![CI](https://github.com/lawzava/subswapper/actions/workflows/ci.yml/badge.svg)](https://github.com/lawzava/subswapper/actions/workflows/ci.yml)
+[![CI](https://github.com/3kh0/subswapper-fx/actions/workflows/ci.yml/badge.svg)](https://github.com/3kh0/subswapper-fx/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+This fork of [lawzava/subswapper](https://github.com/lawzava/subswapper)
+adds [fx subscription balancing](contrib/fx/README.md). The Codex proxy can
+authenticate fx's current local login and spread requests across two Codex
+subscriptions according to their available quota.
 
 `subswapper` is a small Go CLI that manages isolated [Claude Code](https://claude.com/claude-code)
 and [Codex](https://openai.com/codex/) account homes on one machine. Claude
@@ -34,14 +39,14 @@ existing process.
 Requires Go 1.26.6 or newer.
 
 ```sh
-go install github.com/lawzava/subswapper/cmd/subswapper@latest
+go install github.com/3kh0/subswapper-fx/cmd/subswapper@latest
 ```
 
 Or build from source:
 
 ```sh
-git clone https://github.com/lawzava/subswapper.git
-cd subswapper
+  git clone https://github.com/3kh0/subswapper-fx.git
+  cd subswapper-fx
 go build ./cmd/subswapper
 ```
 

@@ -1,0 +1,15 @@
+{
+  "monitor": {
+    "interval": "1m",
+    "auto_switch": false,
+    "warmup": false
+  },
+  "services": [
+    {
+      "name": "codex",
+      "kind": "codex",
+      "account_mode": "home",
+      "proxy_listen": "127.0.0.1:7879"
+    }
+  ]
+}

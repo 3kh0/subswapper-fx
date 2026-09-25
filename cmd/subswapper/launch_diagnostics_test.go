@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lawzava/subswapper/internal/subswapper"
+	"github.com/3kh0/subswapper-fx/internal/subswapper"
 )
 
 func TestClaudeLaunchDiagnostics(t *testing.T) {

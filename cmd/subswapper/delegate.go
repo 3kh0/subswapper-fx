@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lawzava/subswapper/internal/subswapper"
+	"github.com/3kh0/subswapper-fx/internal/subswapper"
 )
 
 // This marker deliberately avoids SUBSWAPPER_: provider launch environments

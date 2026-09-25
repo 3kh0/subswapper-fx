@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lawzava/subswapper/internal/subswapper"
+	"github.com/3kh0/subswapper-fx/internal/subswapper"
 	"golang.org/x/term"
 )
 

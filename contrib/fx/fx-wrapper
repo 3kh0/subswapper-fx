@@ -1,0 +1,6 @@
+#!/bin/sh
+# Install as fx beside a preserved fx-direct binary.
+FX_BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+FX_E2E_OPENAI_CODEX_RESPONSES_URL=http://127.0.0.1:7879/backend-api/codex/responses
+export FX_E2E_OPENAI_CODEX_RESPONSES_URL
+exec "$FX_BIN_DIR/fx-direct" "$@"

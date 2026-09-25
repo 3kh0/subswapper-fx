@@ -6,7 +6,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/lawzava/subswapper/internal/subswapper"
+	"github.com/3kh0/subswapper-fx/internal/subswapper"
 )
 
 // launchDiagnostic contains only fixed, safe text. Delegated home runs may

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -73,8 +74,9 @@ type CodexProxy struct {
 	client      *http.Client
 	logf        func(format string, args ...any)
 
-	usageMu       sync.Mutex
-	usageInFlight map[string]struct{}
+	usageMu        sync.Mutex
+	usageInFlight  map[string]struct{}
+	balanceCounter atomic.Uint64
 }
 
 type codexProxyRoute struct {
@@ -448,6 +450,9 @@ func (p *CodexProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeClaudeProxyError(w, http.StatusServiceUnavailable, "api_error", "no Codex account has a usable ChatGPT login")
 		return
 	}
+	if os.Getenv("SUBSWAPPER_CODEX_BALANCE") == "1" {
+		balanceCodexRoutes(routes, p.balanceCounter.Add(1))
+	}
 
 	// Same policy as the Claude proxy: only a quota rejection or a dead
 	// token on the active account makes the fallback the selected route.
@@ -517,7 +522,52 @@ func (p *CodexProxy) authorized(r *http.Request) bool {
 	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(header[len(prefix):]), []byte(p.placeholder.Token)) == 1
+	token := header[len(prefix):]
+	if subtle.ConstantTimeCompare([]byte(token), []byte(p.placeholder.Token)) == 1 {
+		return true
+	}
+	// fx keeps an independent, refreshable login. Match its current local
+	// access token so the same loopback proxy can serve an ordinary fx process.
+	path := os.Getenv("SUBSWAPPER_FX_AUTH_FILE")
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > 64*1024 {
+		return false
+	}
+	var session struct {
+		AccessToken string `json:"access_token"`
+	}
+	if json.Unmarshal(data, &session) != nil || session.AccessToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(session.AccessToken)) == 1
+}
+
+// balanceCodexRoutes chooses the least-used subscription. Accounts within a
+// two-point usage band alternate, keeping both seats active while the usage
+// endpoint catches up with recent requests.
+func balanceCodexRoutes(routes []codexProxyRoute, turn uint64) {
+	bucket := func(score float64) float64 {
+		if math.IsInf(score, 1) {
+			return score
+		}
+		return math.Floor(score * 50)
+	}
+	sort.SliceStable(routes, func(i, j int) bool {
+		left, right := routes[i], routes[j]
+		if left.Exhausted != right.Exhausted {
+			return !left.Exhausted
+		}
+		if bucket(left.Score) != bucket(right.Score) {
+			return bucket(left.Score) < bucket(right.Score)
+		}
+		if turn%2 == 0 {
+			return left.Account > right.Account
+		}
+		return left.Account < right.Account
+	})
 }
 
 func (p *CodexProxy) target(r *http.Request) string {
