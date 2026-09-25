@@ -80,12 +80,14 @@ type CodexProxy struct {
 }
 
 type codexProxyRoute struct {
-	Account   string
-	Token     string
-	AccountID string
-	Active    bool
-	Score     float64
-	Exhausted bool
+	Account          string
+	Token            string
+	AccountID        string
+	Active           bool
+	Score            float64
+	Exhausted        bool
+	HeadroomPerHour  float64
+	SessionNearLimit bool
 }
 
 type codexProxyAuthFile struct {
@@ -545,29 +547,64 @@ func (p *CodexProxy) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(session.AccessToken)) == 1
 }
 
-// balanceCodexRoutes chooses the least-used subscription. Accounts within a
-// two-point usage band alternate, keeping both seats active while the usage
-// endpoint catches up with recent requests.
+// balanceCodexRoutes spends quota that is due to reset sooner, while keeping
+// enough room in each account's current session. Similar routes alternate.
 func balanceCodexRoutes(routes []codexProxyRoute, turn uint64) {
 	bucket := func(score float64) float64 {
-		if math.IsInf(score, 1) {
+		if math.IsInf(score, -1) {
 			return score
 		}
-		return math.Floor(score * 50)
+		return math.Floor(score * 1000)
 	}
 	sort.SliceStable(routes, func(i, j int) bool {
 		left, right := routes[i], routes[j]
 		if left.Exhausted != right.Exhausted {
 			return !left.Exhausted
 		}
-		if bucket(left.Score) != bucket(right.Score) {
-			return bucket(left.Score) < bucket(right.Score)
+		if left.SessionNearLimit != right.SessionNearLimit {
+			return !left.SessionNearLimit
+		}
+		if bucket(left.HeadroomPerHour) != bucket(right.HeadroomPerHour) {
+			return bucket(left.HeadroomPerHour) > bucket(right.HeadroomPerHour)
 		}
 		if turn%2 == 0 {
 			return left.Account > right.Account
 		}
 		return left.Account < right.Account
 	})
+}
+
+// codexHeadroomPerHour estimates how much of the most constrained quota can
+// still be spent per hour before it resets. A shorter remaining window makes
+// its unused quota more urgent to spend. The values are fractions of each
+// window's own allowance, so the function does not assume equal plan sizes.
+func codexHeadroomPerHour(usage UsageSnapshot, now time.Time) float64 {
+	windows := []struct {
+		window       LimitWindow
+		defaultHours float64
+	}{
+		{usage.FiveHour, 5},
+		{usage.Weekly, 168},
+	}
+	lowest := math.Inf(1)
+	for _, candidate := range windows {
+		if !candidate.window.ResetsAt.IsZero() && !now.Before(candidate.window.ResetsAt) {
+			continue
+		}
+		used, ok := candidate.window.Ratio()
+		if !ok {
+			continue
+		}
+		hours := candidate.defaultHours
+		if !candidate.window.ResetsAt.IsZero() {
+			hours = candidate.window.ResetsAt.Sub(now).Hours()
+		}
+		lowest = min(lowest, max(0, 1-used)/max(hours, 0.25))
+	}
+	if math.IsInf(lowest, 1) {
+		return math.Inf(-1)
+	}
+	return lowest
 }
 
 func (p *CodexProxy) target(r *http.Request) string {
@@ -665,6 +702,12 @@ func codexProxyRoutes(cfg Config, service ServiceConfig) ([]codexProxyRoute, err
 		if usage, ok := codexProxyKnownUsage(account); ok {
 			route.Score = usage.Score()
 			route.Exhausted = usage.Exhausted()
+			route.HeadroomPerHour = codexHeadroomPerHour(usage, now)
+			if sessionUsed, ok := usage.FiveHour.Ratio(); ok {
+				route.SessionNearLimit = sessionUsed >= 0.9
+			}
+		} else {
+			route.HeadroomPerHour = math.Inf(-1)
 		}
 		routes = append(routes, route)
 	}

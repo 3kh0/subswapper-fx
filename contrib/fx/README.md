@@ -2,10 +2,13 @@
 
 This adapter lets fx use Subswapper's Codex proxy. Keep two separate ChatGPT
 subscription logins in two `CODEX_HOME` directories. Subswapper reads their
-Codex usage and routes fx's next model request to the account with more
-remaining headroom. When their highest used quota windows are within two
-percentage points, it alternates requests. On a quota rejection, the proxy
-retries the request through the other account.
+Codex usage and routes fx's next model request using the remaining session
+and weekly quota together with each window's reset time. For each account it
+finds the smaller remaining fraction per hour until reset, then favors the
+account with the larger value. Similar values alternate requests. An account
+with at least 90% of its current session used goes last while another account
+has session room. On a quota rejection, the proxy retries through the other
+account.
 
 fx continues to use its own refreshable Codex login. Set
 `SUBSWAPPER_FX_AUTH_FILE` to fx's `~/.fx/chatgpt-auth.json`; the proxy accepts
@@ -39,8 +42,10 @@ can refresh its login normally. Keep the proxy bound to loopback.
    continue to use their own endpoints.
 
 `subswapper-fx status -config <config>` shows each account's usage and the
-selected route. `fx status` still reports fx's own login; it does not report
-which account served the previous proxied request.
+last selected route. Its `SCORE` column remains Subswapper's largest used
+percentage; the fx route also accounts for reset times. `fx status` still
+reports fx's own login; it does not report which account served the previous
+proxied request.
 
 ## Compatibility
 
